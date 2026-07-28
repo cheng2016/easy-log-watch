@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -102,10 +103,13 @@ def run_script(script_name: str, xlog_path: str) -> list[str]:
         except OSError:
             pass
 
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         proc = subprocess.run(
-            [sys.executable, str(script), str(xlog)],
+            [sys.executable, "-B", str(script), str(xlog)],
             cwd=str(xlog.parent),
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",

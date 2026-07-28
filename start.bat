@@ -1,6 +1,7 @@
 @echo off
 cd /d "%~dp0"
 setlocal EnableExtensions
+set PYTHONDONTWRITEBYTECODE=1
 
 where python >nul 2>&1
 if errorlevel 1 (
