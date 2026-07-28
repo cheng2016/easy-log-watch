@@ -4,6 +4,8 @@
 
 不用敲命令行、不用每次找官方 Python 脚本、不用把整份明文导出来再翻——双击启动，浏览器里就能搞定从解密到排障的全流程。
 
+<img width="1828" height="972" alt="image" src="https://github.com/user-attachments/assets/6e1153a1-73c5-4d21-a568-7fe4315cf838" />
+
 ---
 
 ## 为什么用它？
