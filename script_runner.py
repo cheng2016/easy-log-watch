@@ -91,7 +91,7 @@ def run_script(script_name: str, xlog_path: str) -> list[str]:
     Successful decode writes ``<xlog>.log`` next to the input file.
     """
     script = resolve_script(script_name)
-    xlog = Path(xlog_path)
+    xlog = Path(xlog_path).resolve()
     if not xlog.is_file():
         raise FileNotFoundError("找不到 xlog：" + str(xlog))
 
