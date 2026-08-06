@@ -951,7 +951,6 @@ def api_file(job_id: str):
 
 if __name__ == "__main__":
     import atexit
-    import msvcrt
     import socket
     import sys
     import threading
@@ -962,14 +961,36 @@ if __name__ == "__main__":
     port = 5000
     lock_path = UPLOAD_ROOT / ".server.lock"
     lock_state = {"fh": None}
+    is_windows = os.name == "nt"
+
+    def _lock_file(fh) -> None:
+        if is_windows:
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock_file(fh) -> None:
+        if is_windows:
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def _release_lock() -> None:
         fh = lock_state["fh"]
         if fh is None:
             return
         try:
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            _unlock_file(fh)
         except OSError:
             pass
         try:
@@ -986,8 +1007,7 @@ if __name__ == "__main__":
     fh = None
     try:
         fh = open(lock_path, "a+b")
-        fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        _lock_file(fh)
         fh.seek(0)
         fh.truncate()
         fh.write(str(os.getpid()).encode("ascii"))
@@ -1014,7 +1034,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     threading.Thread(target=_ensure_legacy_scanned, daemon=True).start()
-    print(f"日志解密服务已启动: http://{host}:{port} (Waitress)")
+    print(f"Easy Log Watch 已启动: http://{host}:{port}")
     try:
         serve(app, host=host, port=port, threads=6, channel_timeout=120)
     except OSError as e:

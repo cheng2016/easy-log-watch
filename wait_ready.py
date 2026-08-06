@@ -1,4 +1,4 @@
-"""Wait until local server responds (used by start.bat)."""
+"""Wait until local server responds (used by start.bat / start.sh)."""
 import sys
 import time
 import urllib.error
