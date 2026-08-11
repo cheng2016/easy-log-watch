@@ -827,6 +827,38 @@ def _search_file(
     return hits, scanned, capped
 
 
+@app.route("/api/reveal/<job_id>", methods=["POST"])
+def api_reveal(job_id: str):
+    """Open the file's folder in the system file manager (Explorer / Finder)."""
+    data = request.get_json(silent=True) or {}
+    rel_path = (data.get("path") or request.args.get("path") or "").strip()
+    if not rel_path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    try:
+        full = _resolve_job_file(job_id, rel_path)
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    except ValueError:
+        return jsonify({"ok": False, "error": "非法路径"}), 400
+
+    import subprocess
+    import sys
+
+    target = str(full.resolve())
+    folder = str(full.parent.resolve())
+    try:
+        if os.name == "nt":
+            # Select the file in Explorer
+            subprocess.Popen(["explorer", "/select,", target], close_fds=True)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", target], close_fds=True)
+        else:
+            subprocess.Popen(["xdg-open", folder], close_fds=True)
+    except OSError as e:
+        return jsonify({"ok": False, "error": "无法打开文件夹：" + str(e)}), 500
+    return jsonify({"ok": True, "folder": folder})
+
+
 @app.route("/api/file/<job_id>", methods=["GET"])
 def api_file(job_id: str):
     rel_path = request.args.get("path", "")

@@ -318,6 +318,19 @@
       flex-shrink: 0;
     }
 
+    .file-item .file-reveal {
+      flex-shrink: 0;
+      opacity: 0.55;
+      padding: 2px 6px;
+      font-size: 0.68rem;
+      line-height: 1.2;
+    }
+
+    .file-item:hover .file-reveal,
+    .file-item.selected .file-reveal {
+      opacity: 1;
+    }
+
     .main {
       display: flex;
       flex-direction: column;
@@ -1184,6 +1197,7 @@
       <div class="preview-bar-top">
         <div class="path" id="previewPath">选择左侧解密文件，或把已解密日志拖到下方预览</div>
         <div class="meta" id="previewMeta"></div>
+        <button class="btn btn-sm" type="button" id="revealBtn" disabled title="在资源管理器 / Finder 中打开所在文件夹">打开文件夹</button>
         <button class="btn btn-sm" type="button" id="downloadBtn" disabled>下载完整文件</button>
       </div>
       <div class="preview-tools">
@@ -1300,6 +1314,20 @@
       mainPane.scrollTop = mainPane.scrollHeight;
     }
 
+    function scrollToLogStart() {
+      if (!mainPane) return;
+      syncStickyOffsets();
+      const first = previewContent && previewContent.querySelector(".row[data-line]");
+      if (first) {
+        const pad = stickyChromeHeight() + 8;
+        const mainRect = mainPane.getBoundingClientRect();
+        const rowRect = first.getBoundingClientRect();
+        mainPane.scrollTop += rowRect.top - mainRect.top - pad;
+        return;
+      }
+      scrollMainToPreviewTop();
+    }
+
     function stickyChromeHeight() {
       let h = previewBar ? previewBar.offsetHeight : 0;
       const status = document.getElementById("previewMsg");
@@ -1336,6 +1364,7 @@
     }
 
     const downloadBtn = document.getElementById("downloadBtn");
+    const revealBtn = document.getElementById("revealBtn");
     const modeHead = document.getElementById("modeHead");
     const modeTail = document.getElementById("modeTail");
     const searchInput = document.getElementById("searchInput");
@@ -1758,6 +1787,7 @@
           if (kind === "source") {
             selected = { jobId, path, name, kind };
             downloadBtn.disabled = false;
+            if (revealBtn) revealBtn.disabled = false;
             previewPath.textContent = name + "（二进制源文件，无法文本预览）";
             previewMeta.textContent = formatSize(Number(node.dataset.size || 0));
             previewMsg.textContent = "";
@@ -1767,6 +1797,7 @@
           if (kind === "zip" || name.endsWith(".zip")) {
             selected = { jobId, path, name, kind: "zip" };
             downloadBtn.disabled = false;
+            if (revealBtn) revealBtn.disabled = false;
             previewPath.textContent = name;
             previewMeta.textContent = "zip";
             previewMsg.textContent = "";
@@ -1776,6 +1807,14 @@
           // Keep current keyword/level: re-search on the newly selected file
           selected = { jobId, path, name, kind: "decoded" };
           reopenSearchOrHead();
+        });
+      });
+
+      body.querySelectorAll(".file-reveal").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          revealInFolder(btn.dataset.job, btn.dataset.path);
         });
       });
 
@@ -1793,6 +1832,7 @@
         <span class="dot"></span>
         <span class="name" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>
         <span class="size">${f.size ? formatSize(f.size) : ""}</span>
+        <button class="btn btn-ghost btn-sm file-reveal" type="button" title="打开所在文件夹" data-job="${jobId}" data-path="${escapeAttr(f.path)}">目录</button>
       </div>`;
     }
 
@@ -1808,6 +1848,7 @@
       searchBtn.disabled = !enabled;
       matchModeEl.disabled = !enabled;
       downloadBtn.disabled = !enabled;
+      if (revealBtn) revealBtn.disabled = !enabled;
       levelSeg.querySelectorAll("button").forEach((b) => { b.disabled = !enabled; });
       if (!enabled) {
         searchClearBtn.disabled = true;
@@ -2106,9 +2147,14 @@
         previewMsg.textContent = data.message || "";
         updateBrowseMessage();
         syncStickyOffsets();
-        // Only explicit「末尾」才滚到内容底部；切换文件/开头/搜索保持当前滚动，避免上传区被顶走
-        if (mode === "tail") scrollMainToBottom();
-      } catch (e) {
+        // 「末尾」滚到底；「开头」滚到日志首行（sticky 栏下方）
+        if (mode === "tail") {
+          requestAnimationFrame(() => scrollMainToBottom());
+        } else if (mode === "head") {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => scrollToLogStart());
+          });
+        }      } catch (e) {
         if (reqId !== previewReqId) return;
         showToast("预览失败：" + e.message, "error");
       } finally {
@@ -2394,6 +2440,32 @@
       const url = "/api/file/" + selected.jobId + "?path=" + encodeURIComponent(selected.path) + "&download=1";
       window.location.href = url;
     });
+
+    async function revealInFolder(jobId, path) {
+      if (!jobId || !path) return;
+      try {
+        const res = await fetch("/api/reveal/" + jobId, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          showToast(data.error || "无法打开文件夹", "error");
+          return;
+        }
+        showToast("已打开所在文件夹", "ok");
+      } catch (e) {
+        showToast("打开文件夹失败：" + e.message, "error");
+      }
+    }
+
+    if (revealBtn) {
+      revealBtn.addEventListener("click", () => {
+        if (!selected) return;
+        revealInFolder(selected.jobId, selected.path);
+      });
+    }
 
     modeHead.addEventListener("click", () => {
       if (!selected || selected.kind !== "decoded") return;
