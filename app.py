@@ -26,7 +26,7 @@ UPLOAD_ROOT = BASE_DIR / ".uploads"
 HISTORY_FILE = UPLOAD_ROOT / "history.json"
 MAX_CONTENT_LENGTH = 200 * 1024 * 1024  # 200 MB
 PREVIEW_LINES = 400
-SEARCH_MAX_HITS = 200
+SEARCH_MAX_HITS = 2000
 
 app = Flask(__name__)
 app.secret_key = "easy-log-watch-local"
@@ -778,6 +778,13 @@ def _build_matcher(query: str, match_mode: str):
             raise ValueError("正则无效：" + str(e)) from e
         return lambda text: pattern.search(text) is not None
 
+    # Default box: "a|b" means any, "a&b" means all (matches the placeholder).
+    if mode == "plain":
+        if "&" in q and "|" not in q:
+            mode = "and"
+        elif "|" in q and "&" not in q:
+            mode = "or"
+
     if mode == "or":
         parts = [p.strip() for p in re.split(r"\s*\|\s*|\s+OR\s+", q, flags=re.IGNORECASE) if p.strip()]
         if not parts:
@@ -803,14 +810,25 @@ def _search_file(
     max_hits: int = SEARCH_MAX_HITS,
     match_mode: str = "plain",
     level: str = "",
-) -> tuple[list[dict], int, bool]:
+    offset: int = 0,
+) -> tuple[list[dict], int, bool, int, int, int]:
+    """Search the complete file and return one page of matching lines.
+
+    Always scans the whole document. ``max_hits`` only limits how many rows
+    are returned in this response. ``first_n`` / ``last_n`` are the line
+    numbers of the first and last match in the entire file.
+    """
     matcher = _build_matcher(query, match_mode)
     level = (level or "").strip().upper()
     allowed = set(level.replace(",", "").replace(" ", "")) if level and level not in ("ALL", "*") else set()
+    max_hits = max(1, int(max_hits))
+    offset = max(0, int(offset))
 
     hits: list[dict] = []
     scanned = 0
-    capped = False
+    matched = 0
+    first_n = 0
+    last_n = 0
     with path.open("rb") as fp:
         for idx, raw in enumerate(fp, start=1):
             scanned = idx
@@ -820,11 +838,16 @@ def _search_file(
                 if not lv or lv not in allowed:
                     continue
             if matcher(text_line):
-                hits.append({"n": idx, "text": text_line, "level": _line_level(text_line)})
-                if len(hits) >= max_hits:
-                    capped = True
-                    break
-    return hits, scanned, capped
+                matched += 1
+                if first_n == 0:
+                    first_n = idx
+                last_n = idx
+                if matched <= offset:
+                    continue
+                if len(hits) < max_hits:
+                    hits.append({"n": idx, "text": text_line, "level": _line_level(text_line)})
+    has_more = matched > offset + len(hits)
+    return hits, scanned, has_more, matched, first_n, last_n
 
 
 @app.route("/api/reveal/<job_id>", methods=["POST"])
@@ -895,20 +918,58 @@ def api_file(job_id: str):
         if not query and not level:
             return jsonify({"ok": False, "error": "empty_query"}), 400
         try:
-            hits, scanned, capped = _search_file(
+            try:
+                search_offset = max(0, int(request.args.get("offset") or 0))
+            except ValueError:
+                search_offset = 0
+            hits, scanned, has_more, total_hits, first_n, last_n = _search_file(
                 full,
                 query,
                 SEARCH_MAX_HITS,
                 match_mode=match_mode,
                 level=level,
+                offset=search_offset,
             )
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
 
+        effective_mode = match_mode
+        if effective_mode == "plain" and query:
+            if "&" in query and "|" not in query:
+                effective_mode = "and"
+            elif "|" in query and "&" not in query:
+                effective_mode = "or"
         mode_label = {"plain": "包含", "or": "任一", "and": "全部", "regex": "正则"}.get(
-            match_mode, match_mode
+            effective_mode, effective_mode
         )
         level_label = f" · 级别 {level}" if level else ""
+        shown_from = search_offset + 1 if hits else 0
+        shown_to = search_offset + len(hits)
+        shown_q = query if len(query) <= 40 else query[:40] + "…"
+        span = f"，分布在 L{first_n}–L{last_n} / 共 {scanned} 行" if first_n else f" · 已扫描 {scanned} 行"
+        if total_hits == 0:
+            message = f"全文已扫描 {scanned} 行，未找到「{shown_q}」（{mode_label}{level_label}）"
+        elif has_more:
+            message = (
+                f"「{shown_q}」全文共 {total_hits} 处（{mode_label}{level_label}）{span}，"
+                f"当前列出第 {shown_from}–{shown_to} 处，其余正在继续加载"
+            )
+        else:
+            message = (
+                f"「{shown_q}」全文共 {total_hits} 处（{mode_label}{level_label}）{span}，已全部列出"
+            )
+        try:
+            runtime_dir = BASE_DIR / ".runtime"
+            runtime_dir.mkdir(exist_ok=True)
+            with (runtime_dir / "search.log").open("a", encoding="utf-8") as logf:
+                logf.write(
+                    f"{_now_iso()}\tq={query!r}\tmode={match_mode}\tlevel={level}\t"
+                    f"offset={search_offset}\thits={len(hits)}\ttotal={total_hits}\t"
+                    f"scanned={scanned}\tfirst={first_n}\tlast={last_n}\t"
+                    f"has_more={has_more}\tfile={full.name}\n"
+                )
+        except OSError:
+            pass
         return jsonify(
             {
                 "ok": True,
@@ -921,15 +982,17 @@ def api_file(job_id: str):
                 "level": level,
                 "lines": hits,
                 "hit_count": len(hits),
+                "total_hits": total_hits,
+                "first_line": first_n,
+                "last_line": last_n,
+                "offset": search_offset,
+                "next_offset": search_offset + len(hits),
+                "has_more": has_more,
                 "scanned_lines": scanned,
-                "capped": capped,
+                "capped": has_more,
                 "has_more_up": False,
                 "has_more_down": False,
-                "message": (
-                    f"找到 {len(hits)} 处（{mode_label}{level_label}）"
-                    + (f"；已达上限 {SEARCH_MAX_HITS}" if capped else "")
-                    + " · 点击行可跳转上下文"
-                ),
+                "message": message,
             }
         )
     if mode == "tail":

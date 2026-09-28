@@ -1387,6 +1387,10 @@
     const PENDING_LIST_CAP = 80;
     let selectedLevel = "";
     let focusLineNo = null;
+    let searchOffset = 0;
+    let searchHasMore = false;
+    let searchMoreBusy = false;
+    let suggestNav = false;
 
     function formatSize(bytes) {
       if (bytes < 1024) return bytes + " B";
@@ -2078,6 +2082,80 @@
       return res.json();
     }
 
+    function renderSearchStatus(data, append) {
+      const total = Number(data.total_hits);
+      const hasTotal = Number.isFinite(total);
+      if (!append) {
+        previewMsg.textContent = data.message || "";
+      } else if (hasTotal) {
+        previewMsg.textContent =
+          "已加载 " + searchOffset + " / " + total + " 处匹配（全文扫描） · 点击行可跳转上下文";
+      } else {
+        previewMsg.textContent = "已加载 " + searchOffset + " 处匹配（全文扫描） · 点击行可跳转上下文";
+      }
+      searchHasMore = !!data.has_more;
+      if (!searchHasMore) {
+        if (data.message) previewMsg.textContent = data.message;
+        return;
+      }
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "btn btn-sm";
+      more.style.marginLeft = "8px";
+      more.textContent = searchMoreBusy
+        ? "加载中…"
+        : hasTotal
+          ? "加载更多（还有 " + Math.max(0, total - searchOffset) + " 处）"
+          : "加载更多匹配";
+      more.disabled = searchMoreBusy;
+      more.addEventListener("click", loadMoreSearchResults);
+      previewMsg.appendChild(more);
+    }
+
+    async function loadMoreSearchResults() {
+      if (!selected || selected.kind !== "decoded" || previewMode !== "search" || !searchHasMore || searchMoreBusy) return;
+      const jobId = selected.jobId;
+      const path = selected.path;
+      const reqId = previewReqId;
+      const q = (lastQuery || searchInput.value).trim();
+      searchMoreBusy = true;
+      renderSearchStatus({ has_more: true, total_hits: null }, true);
+      let data = null;
+      try {
+        let url = "/api/file/" + jobId + "?path=" + encodeURIComponent(path) +
+          "&mode=search&q=" + encodeURIComponent(q) +
+          "&match=" + encodeURIComponent(lastMatchMode) +
+          "&offset=" + encodeURIComponent(searchOffset);
+        if (selectedLevel) url += "&level=" + encodeURIComponent(selectedLevel);
+        const res = await fetch(url);
+        data = await res.json();
+        if (reqId !== previewReqId) return;
+        if (!data.ok) {
+          showToast(data.error || "搜索失败", "error");
+          return;
+        }
+        const lines = data.lines || [];
+        searchOffset = Number.isFinite(Number(data.next_offset))
+          ? Number(data.next_offset)
+          : searchOffset + lines.length;
+        renderLines(lines, data.query || q, true, true);
+        renderSearchStatus(data, true);
+      } catch (e) {
+        if (reqId === previewReqId) showToast("搜索失败：" + e.message, "error");
+      } finally {
+        searchMoreBusy = false;
+        if (reqId !== previewReqId) return;
+        const more = previewMsg.querySelector("button");
+        if (more && searchHasMore) {
+          more.disabled = false;
+          const total = Number(data && data.total_hits);
+          more.textContent = Number.isFinite(total)
+            ? "加载更多（还有 " + Math.max(0, total - searchOffset) + " 处）"
+            : "加载更多匹配";
+        }
+      }
+    }
+
     async function openPreview(jobId, path, name, mode) {
       selected = { jobId, path, name, kind: "decoded" };
       setPreviewControls(true);
@@ -2102,9 +2180,14 @@
           focusLineNo = null;
           const match = getMatchMode();
           lastMatchMode = match;
+          // A new search always starts at the first hit. Pagination uses loadMoreSearchResults.
+          if (!searchMoreBusy) searchOffset = 0;
+          previewContent.innerHTML = "";
+          previewMsg.textContent = "正在全文搜索「" + q + "」…";
           let url = "/api/file/" + jobId + "?path=" + encodeURIComponent(path) +
             "&mode=search&q=" + encodeURIComponent(q) +
-            "&match=" + encodeURIComponent(match);
+            "&match=" + encodeURIComponent(match) +
+            "&offset=" + encodeURIComponent(searchOffset);
           if (selectedLevel) url += "&level=" + encodeURIComponent(selectedLevel);
           const res = await fetch(url);
           const data = await res.json();
@@ -2119,10 +2202,19 @@
           showReadyPreview();
           browseState = null;
           focusLineNo = null;
+          searchOffset = Number.isFinite(Number(data.next_offset))
+            ? Number(data.next_offset)
+            : (data.lines || []).length;
+          searchMoreBusy = false;
           renderLines(data.lines || [], data.query || q, false, true);
           previewMeta.textContent = formatSize(data.size);
-          previewMsg.textContent = data.message || "";
+          renderSearchStatus(data, false);
           syncStickyOffsets();
+          while (searchHasMore && reqId === previewReqId) {
+            const before = searchOffset;
+            await loadMoreSearchResults();
+            if (reqId !== previewReqId || searchOffset === before) break;
+          }
           return;
         }
 
@@ -2231,6 +2323,9 @@
       updateClearBtn();
       hideSuggest();
       setSearchModeUi(false);
+      searchOffset = 0;
+      searchHasMore = false;
+      searchMoreBusy = false;
       previewPath.textContent = "选择左侧解密文件，或把已解密日志拖到下方预览";
       previewMeta.textContent = "";
       previewMsg.textContent = "";
@@ -2497,6 +2592,9 @@
         return;
       }
       lastQuery = q;
+      searchOffset = 0;
+      searchHasMore = false;
+      searchMoreBusy = false;
       if (q) pushSearchHistory(q);
       updateClearBtn();
       openPreview(selected.jobId, selected.path, selected.name, "search");
@@ -2572,9 +2670,9 @@
         return;
       }
       searchSuggest.innerHTML = list
-        .map((item, idx) => {
+        .map((item) => {
           return (
-            '<div class="sug-item' + (idx === 0 && filter ? " active" : "") + '" data-q="' + escapeAttr(item) + '">' +
+            '<div class="sug-item" data-q="' + escapeAttr(item) + '">' +
             '<span class="label">' + escapeHtml(item) + "</span>" +
             '<span class="del" data-del="' + escapeAttr(item) + '" title="删除这条历史">删除</span>' +
             "</div>"
@@ -2597,6 +2695,7 @@
       const active = searchSuggest.querySelector(".sug-item.active");
       if (e.key === "ArrowDown" && searchSuggest.classList.contains("show") && items.length) {
         e.preventDefault();
+        suggestNav = true;
         let idx = items.indexOf(active);
         idx = idx < items.length - 1 ? idx + 1 : 0;
         items.forEach((x) => x.classList.remove("active"));
@@ -2605,6 +2704,7 @@
       }
       if (e.key === "ArrowUp" && searchSuggest.classList.contains("show") && items.length) {
         e.preventDefault();
+        suggestNav = true;
         let idx = items.indexOf(active);
         idx = idx > 0 ? idx - 1 : items.length - 1;
         items.forEach((x) => x.classList.remove("active"));
@@ -2612,21 +2712,24 @@
         return;
       }
       if (e.key === "Escape") {
+        suggestNav = false;
         hideSuggest();
         return;
       }
       if (e.key === "Enter") {
-        if (active && searchSuggest.classList.contains("show") && active.dataset.q) {
-          e.preventDefault();
+        e.preventDefault();
+        // Only use a history item after the user moved to it with the arrow keys.
+        // Otherwise Enter must search exactly the text just typed.
+        if (suggestNav && active && searchSuggest.classList.contains("show") && active.dataset.q) {
           searchInput.value = active.dataset.q || "";
-          updateClearBtn();
-          runSearch();
-          return;
         }
+        suggestNav = false;
+        updateClearBtn();
         runSearch();
       }
     });
     searchInput.addEventListener("input", () => {
+      suggestNav = false;
       updateClearBtn();
       renderSuggest(searchInput.value);
       if (!selected || selected.kind !== "decoded") return;
