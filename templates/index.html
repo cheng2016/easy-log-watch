@@ -161,6 +161,33 @@
 
     .job-head:hover { background: rgba(255, 255, 255, 0.03); }
 
+    .sync-btn {
+      color: #8fd0ff;
+      border-color: rgba(143, 208, 255, 0.45);
+    }
+
+    .online-list {
+      padding: 0 8px 6px;
+      flex-shrink: 0;
+    }
+
+    .online-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: var(--radius);
+    }
+
+    .online-row .name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 0.82rem;
+    }
+
     .job-title {
       font-size: 0.86rem;
       font-weight: 600;
@@ -318,7 +345,8 @@
       flex-shrink: 0;
     }
 
-    .file-item .file-reveal {
+    .file-item .file-reveal,
+    .file-item .file-copy {
       flex-shrink: 0;
       opacity: 0.55;
       padding: 2px 6px;
@@ -327,7 +355,9 @@
     }
 
     .file-item:hover .file-reveal,
-    .file-item.selected .file-reveal {
+    .file-item.selected .file-reveal,
+    .file-item:hover .file-copy,
+    .file-item.selected .file-copy {
       opacity: 1;
     }
 
@@ -390,10 +420,7 @@
     }
 
     .upload-box input {
-      position: absolute;
-      inset: 0;
-      opacity: 0;
-      cursor: pointer;
+      display: none;
     }
 
     .upload-icon {
@@ -447,6 +474,10 @@
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
+    }
+
+    #pullDeviceBtn {
+      flex: 1 1 100%;
     }
 
     .decoder-row {
@@ -595,6 +626,14 @@
     }
 
     .pending-list li:hover { background: rgba(255, 255, 255, 0.03); }
+
+    #devicePicker .pending-list { max-height: 180px; }
+
+    #devicePicker .device-pick {
+      width: 100%;
+      text-align: left;
+      font-family: var(--mono);
+    }
 
     .pending-list .dot {
       width: 6px;
@@ -1129,6 +1168,8 @@
       <button class="btn btn-ghost btn-sm" type="button" id="refreshBtn">刷新</button>
       <button class="btn btn-ghost btn-sm" type="button" id="collapseBtn">全部折叠</button>
     </div>
+    <div class="history-label" id="onlineLabel" style="display:none">在线设备</div>
+    <div class="online-list" id="onlineList"></div>
     <div class="history-label">历史记录</div>
     <div class="history-list" id="historyList">
       <div class="empty-history">暂无记录，上传 .xlog / .zip 开始解密</div>
@@ -1149,8 +1190,8 @@
             </svg>
           </div>
           <div class="upload-copy">
-            <div class="upload-title" id="uploadTitle">拖拽或点击上传</div>
-            <div class="upload-hint" id="uploadHint">支持文件 / 文件夹 / .zip，自动筛出 .xlog</div>
+            <div class="upload-title" id="uploadTitle">点击选择，或拖入文件</div>
+            <div class="upload-hint" id="uploadHint">解密后的文件写在源文件同一目录</div>
           </div>
         </div>
         <div class="upload-actions">
@@ -1158,6 +1199,7 @@
           <div class="upload-extra">
             <button class="btn btn-ghost btn-sm" type="button" id="pickFolderBtn">选文件夹</button>
             <button class="btn btn-ghost btn-sm" type="button" id="clearFilesBtn" disabled>清除</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="pullDeviceBtn" title="从设备 /data/data/com.tcl.eshow/files/elog/ 取最新日志。每台设备单独存放，再次拉取只覆盖该设备">拉取设备最新日志</button>
           </div>
         </div>
       </div>
@@ -1172,6 +1214,12 @@
           <div class="script-desc" id="scriptDesc">—</div>
           <div class="script-how">更换：把新的 .py 放进项目 <code>scripts/</code>，刷新页面后在此下拉选择（详见根目录 README）</div>
         </div>
+      </div>
+      <div class="pending-panel" id="devicePicker">
+        <div class="pending-head">
+          <span>多台设备在线，选择一台。每台单独存放，左侧历史里可以再打开以前的设备日志</span>
+        </div>
+        <ul class="pending-list" id="devicePickerList"></ul>
       </div>
       <div class="pending-panel" id="pendingPanel">
         <div class="pending-head">
@@ -1197,6 +1245,7 @@
       <div class="preview-bar-top">
         <div class="path" id="previewPath">选择左侧解密文件，或把已解密日志拖到下方预览</div>
         <div class="meta" id="previewMeta"></div>
+        <button class="btn btn-sm" type="button" id="copyPathBtn" disabled title="复制这份解密日志的完整路径">复制路径</button>
         <button class="btn btn-sm" type="button" id="revealBtn" disabled title="在资源管理器 / Finder 中打开所在文件夹">打开文件夹</button>
         <button class="btn btn-sm" type="button" id="downloadBtn" disabled>下载完整文件</button>
       </div>
@@ -1256,6 +1305,7 @@
     const pickFolderBtn = document.getElementById("pickFolderBtn");
     const decodeBtn = document.getElementById("decodeBtn");
     const clearFilesBtn = document.getElementById("clearFilesBtn");
+    const pullDeviceBtn = document.getElementById("pullDeviceBtn");
     const scriptSelect = document.getElementById("scriptSelect");
     const scriptHint = document.getElementById("scriptHint");
     const scriptDesc = document.getElementById("scriptDesc");
@@ -1344,14 +1394,19 @@
       mainPane.scrollTop += delta;
     }
 
-    function nearLogTop() {
-      if (!browseState || !previewContent || !previewBar) return false;
+    function nearContentTop() {
+      if (!previewContent || !previewBar) return false;
       const first = previewContent.querySelector(".row[data-line]");
       if (!first) return false;
       const barBottom = previewBar.getBoundingClientRect().bottom
         + (document.getElementById("previewMsg")?.offsetHeight || 0);
       const top = first.getBoundingClientRect().top;
       return top >= barBottom - 12 && top <= barBottom + 140;
+    }
+
+    function nearLogTop() {
+      if (!browseState) return false;
+      return nearContentTop();
     }
 
     function updateScrollTopBtn() {
@@ -1365,6 +1420,7 @@
 
     const downloadBtn = document.getElementById("downloadBtn");
     const revealBtn = document.getElementById("revealBtn");
+    const copyPathBtn = document.getElementById("copyPathBtn");
     const modeHead = document.getElementById("modeHead");
     const modeTail = document.getElementById("modeTail");
     const searchInput = document.getElementById("searchInput");
@@ -1388,7 +1444,10 @@
     let selectedLevel = "";
     let focusLineNo = null;
     let searchOffset = 0;
+    let searchStartOffset = 0;
     let searchHasMore = false;
+    let searchHasBefore = false;
+    let searchTotal = null;
     let searchMoreBusy = false;
     let suggestNav = false;
 
@@ -1432,13 +1491,24 @@
       return (file.webkitRelativePath || file.relativePath || file.name || "file").replace(/\\/g, "/");
     }
 
+    function fileSizeOf(item) {
+      if (!item) return 0;
+      if (item.size != null && item.file == null) return Number(item.size) || 0;
+      return Number((item.file && item.file.size) || item.size || 0);
+    }
+
     function setSelectedFromList(items) {
       const map = new Map();
       for (const it of items) {
         if (!it || !it.file) continue;
         const rel = (it.rel || fileRelPath(it.file)).replace(/\\/g, "/");
         if (!isLogCandidate(rel)) continue;
-        map.set(rel + "::" + it.file.size, { file: it.file, rel });
+        map.set(rel + "::" + it.file.size + "::" + (it.localPath || ""), {
+          file: it.file,
+          rel,
+          localPath: it.localPath || "",
+          size: it.file.size || 0,
+        });
       }
       selectedFiles = Array.from(map.values());
       selectedFiles.sort((a, b) => a.rel.localeCompare(b.rel));
@@ -1455,29 +1525,33 @@
       if (!files.length) {
         dropzone.classList.remove("has-files");
         pendingPanel.classList.remove("show");
-        uploadTitle.textContent = "拖拽或点击上传";
-        uploadHint.textContent = "支持文件 / 文件夹 / .zip，自动筛出 .xlog";
+        uploadTitle.textContent = "点击选择，或拖入文件";
+        uploadHint.textContent = "解密后的文件写在源文件同一目录";
         pendingCount.textContent = "0";
         return;
       }
 
       dropzone.classList.add("has-files");
       pendingPanel.classList.add("show");
-      const total = files.reduce((s, f) => s + f.file.size, 0);
-      const hasFolder = files.some((f) => f.rel.includes("/"));
+      const total = files.reduce((s, f) => s + fileSizeOf(f), 0);
+      const hasFolder = files.some((f) => (f.rel || "").includes("/"));
+      const local = files.every((f) => f.localPath);
       uploadTitle.textContent = "已选择 " + files.length + " 个文件（" + formatSize(total) + "）";
-      uploadHint.textContent = hasFolder
-        ? "含文件夹路径，点右侧「开始解密」"
-        : "可继续拖入更换，然后点右侧「开始解密」";
+      uploadHint.textContent = local
+        ? "明文会写在每个源文件的同一目录，点右侧「开始解密」"
+        : (hasFolder
+          ? "这是网页拖入的副本，明文在缓存目录。要写回原目录请点上传区重选"
+          : "网页拖入拿不到原目录，明文在缓存里。要写回源文件旁边请点上传区重选");
       pendingCount.textContent = String(files.length);
 
       files.forEach((item, idx) => {
         if (idx >= PENDING_LIST_CAP) return;
         const li = document.createElement("li");
+        const label = item.localPath || item.rel;
         li.innerHTML =
           '<span class="dot"></span>' +
-          '<span class="name" title="' + escapeAttr(item.rel) + '">' + escapeHtml(item.rel) + "</span>" +
-          '<span class="size">' + formatSize(item.file.size) + "</span>";
+          '<span class="name" title="' + escapeAttr(label) + '">' + escapeHtml(label) + "</span>" +
+          '<span class="size">' + formatSize(fileSizeOf(item)) + "</span>";
         pendingList.appendChild(li);
       });
       if (files.length > PENDING_LIST_CAP) {
@@ -1565,6 +1639,62 @@
       return dateStr;
     }
 
+    function applyLocalItems(items) {
+      selectedFiles = (items || []).map((it) => ({
+        file: null,
+        rel: it.rel || it.name || it.path,
+        localPath: it.path,
+        size: it.size || 0,
+      }));
+      selectedFiles.sort((a, b) => String(a.rel).localeCompare(String(b.rel)));
+      renderSelectedFiles();
+    }
+
+    function urisToLocalPaths(text) {
+      const out = [];
+      for (const line of String(text || "").split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t || t.startsWith("#")) continue;
+        if (!t.toLowerCase().startsWith("file:")) continue;
+        try {
+          const u = new URL(t);
+          let p = decodeURIComponent(u.pathname || "");
+          if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+          p = p.replace(/\//g, "\\");
+          if (p) out.push(p);
+        } catch (err) { /* ignore bad uri */ }
+      }
+      return out;
+    }
+
+    async function pickLocal(mode) {
+      showToast(mode === "folder" ? "请在系统窗口中选择文件夹" : "请在系统窗口中选择文件", "ok");
+      let data;
+      try {
+        const res = await fetch("/api/pick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: mode === "folder" ? "folder" : "files" }),
+        });
+        data = await res.json();
+      } catch (e) {
+        showToast("无法打开选择窗口，改用浏览器选择（明文不会写回原目录）", "error");
+        if (mode === "folder") folderInput.click();
+        else fileInput.click();
+        return;
+      }
+      if (!data.ok) {
+        showToast(data.error || "选择失败", "error");
+        return;
+      }
+      if (data.cancelled || !data.items || !data.items.length) {
+        if (!data.cancelled) showToast("未找到 .xlog / .zip", "error");
+        return;
+      }
+      applyLocalItems(data.items);
+      if (data.truncated) showToast("文件很多，只列出了前 " + data.items.length + " 个", "ok");
+    }
+
     function setSelectedFilesLabel() {
       const files = Array.from(fileInput.files || []);
       setSelectedFromList(files.map((file) => ({ file, rel: fileRelPath(file) })));
@@ -1573,7 +1703,72 @@
       }
     }
 
+    let onlineDevices = [];
+
+    async function loadOnlineDevices() {
+      try {
+        const res = await fetch("/api/adb-devices");
+        const data = await res.json();
+        onlineDevices = (data && data.devices) || [];
+      } catch (e) {
+        onlineDevices = [];
+      }
+    }
+
+    function matchOnlineDevice(item) {
+      if (!item || !item.device) return null;
+      return onlineDevices.find((device) =>
+        (item.device_key && device.key === item.device_key) ||
+        (item.device_serial && device.serial === item.device_serial)
+      ) || null;
+    }
+
+    function renderOnlineExtras(historyItems) {
+      const label = document.getElementById("onlineLabel");
+      const list = document.getElementById("onlineList");
+      if (!label || !list) return;
+      const knownKeys = new Set();
+      const knownSerials = new Set();
+      for (const item of historyItems || []) {
+        if (item.device_key) knownKeys.add(item.device_key);
+        if (item.device_serial) knownSerials.add(item.device_serial);
+      }
+      const extras = onlineDevices.filter((device) =>
+        !knownKeys.has(device.key) && !knownSerials.has(device.serial)
+      );
+      list.innerHTML = "";
+      if (!extras.length) {
+        label.style.display = "none";
+        return;
+      }
+      label.style.display = "";
+      for (const device of extras) {
+        const row = document.createElement("div");
+        row.className = "online-row";
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = (device.model ? device.model + " · " : "") + device.serial;
+        name.title = device.serial;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-ghost btn-sm sync-btn";
+        btn.textContent = "同步";
+        btn.title = "拉取最新日志并解密";
+        btn.addEventListener("click", () => doPullDevice(device.serial));
+        row.appendChild(name);
+        row.appendChild(btn);
+        list.appendChild(row);
+      }
+    }
+
+    function setSyncBusy(busy) {
+      document.querySelectorAll(".sync-btn").forEach((btn) => {
+        btn.disabled = busy;
+      });
+    }
+
     async function loadHistory(selectJobId) {
+      await loadOnlineDevices();
       let data;
       try {
         const res = await fetch("/api/history");
@@ -1587,6 +1782,7 @@
         return;
       }
 
+      renderOnlineExtras(data.items || []);
       if (!data.items.length) {
         historyList.innerHTML = '<div class="empty-history">暂无记录，上传 .xlog / .zip / 文件夹 开始解密</div>';
         activeJobId = null;
@@ -1618,10 +1814,15 @@
           el.className = "job" + (item.id === activeJobId || item.id === selectJobId ? " active open" : "");
           el.dataset.id = item.id;
           const note = item.note || "";
+          const live = matchOnlineDevice(item);
+          const syncBtn = live
+            ? `<button class="btn btn-ghost btn-sm sync-btn" type="button" title="拉取这台在线设备的最新日志并解密" data-serial="${escapeAttr(live.serial)}">同步</button>`
+            : "";
           el.innerHTML = `
             <div class="job-head">
               <div class="job-title" title="${escapeAttr(item.title || item.id)}">${escapeHtml(item.title || item.id)}</div>
               <div class="job-actions">
+                ${syncBtn}
                 <button class="btn btn-ghost btn-sm edit-btn" type="button" title="重命名 / 备注">改</button>
                 <button class="btn btn-ghost btn-sm del-btn" type="button" title="删除">删</button>
               </div>
@@ -1648,9 +1849,16 @@
           historyList.appendChild(el);
 
           el.querySelector(".job-head").addEventListener("click", (e) => {
-            if (e.target.closest(".del-btn, .edit-btn")) return;
+            if (e.target.closest(".del-btn, .edit-btn, .sync-btn")) return;
             toggleJob(item.id, el);
           });
+          const sync = el.querySelector(".sync-btn");
+          if (sync) {
+            sync.addEventListener("click", (e) => {
+              e.stopPropagation();
+              doPullDevice(sync.dataset.serial);
+            });
+          }
           el.querySelector(".edit-btn").addEventListener("click", (e) => {
             e.stopPropagation();
             document.querySelectorAll(".job.editing").forEach((j) => {
@@ -1701,7 +1909,12 @@
           });
           el.querySelector(".del-btn").addEventListener("click", async (e) => {
             e.stopPropagation();
-            if (!confirm("删除这条历史及本地文件？")) return;
+            const delMsg = item.device
+              ? "删除这台设备的记录及其本地日志？"
+              : (item.external
+                ? "删除这条记录？源目录里的明文会保留。"
+                : "删除这条历史及本地缓存文件？");
+            if (!confirm(delMsg)) return;
             const r = await fetch("/api/history/" + item.id, { method: "DELETE" });
             const d = await r.json();
             if (!d.ok) {
@@ -1771,8 +1984,9 @@
         }
       }
       if (job.zip) {
+        const zipName = job.zip_name || String(job.zip).split(/[/\\]/).pop();
         parts.push('<div class="file-group-title">打包下载</div>');
-        parts.push(fileItemHtml(jobId, { name: job.zip, path: job.zip, size: 0, kind: "zip" }, "decoded"));
+        parts.push(fileItemHtml(jobId, { name: zipName, path: job.zip, size: 0, kind: "zip" }, "decoded"));
       }
       if (job.failed && job.failed.length) {
         parts.push('<div class="file-group-title">失败</div>');
@@ -1792,6 +2006,7 @@
             selected = { jobId, path, name, kind };
             downloadBtn.disabled = false;
             if (revealBtn) revealBtn.disabled = false;
+            if (copyPathBtn) copyPathBtn.disabled = true;
             previewPath.textContent = name + "（二进制源文件，无法文本预览）";
             previewMeta.textContent = formatSize(Number(node.dataset.size || 0));
             previewMsg.textContent = "";
@@ -1802,6 +2017,7 @@
             selected = { jobId, path, name, kind: "zip" };
             downloadBtn.disabled = false;
             if (revealBtn) revealBtn.disabled = false;
+            if (copyPathBtn) copyPathBtn.disabled = true;
             previewPath.textContent = name;
             previewMeta.textContent = "zip";
             previewMsg.textContent = "";
@@ -1821,6 +2037,13 @@
           revealInFolder(btn.dataset.job, btn.dataset.path);
         });
       });
+      body.querySelectorAll(".file-copy").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          copyFullPath(btn.dataset.job, btn.dataset.path);
+        });
+      });
 
       if (selected && selected.jobId === jobId) {
         body.querySelectorAll(".file-item").forEach((node) => {
@@ -1829,13 +2052,24 @@
       }
     }
 
+    function fileLabel(f) {
+      const raw = String((f && f.path) || "");
+      if (raw.includes("/") || raw.includes("\\")) return raw;
+      return (f && f.name) || raw;
+    }
+
     function fileItemHtml(jobId, f, kind) {
       const k = f.kind === "zip" ? "zip" : kind;
       const selectedCls = selected && selected.jobId === jobId && selected.path === f.path ? " selected" : "";
+      const label = fileLabel(f);
+      const copyBtn = k === "decoded"
+        ? `<button class="btn btn-ghost btn-sm file-copy" type="button" title="复制完整路径" data-job="${jobId}" data-path="${escapeAttr(f.path)}">复制路径</button>`
+        : "";
       return `<div class="file-item ${kind}${selectedCls}" data-job="${jobId}" data-path="${escapeAttr(f.path)}" data-name="${escapeAttr(f.name)}" data-kind="${k}" data-size="${f.size || 0}">
         <span class="dot"></span>
-        <span class="name" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>
+        <span class="name" title="${escapeAttr(label)}">${escapeHtml(label)}</span>
         <span class="size">${f.size ? formatSize(f.size) : ""}</span>
+        ${copyBtn}
         <button class="btn btn-ghost btn-sm file-reveal" type="button" title="打开所在文件夹" data-job="${jobId}" data-path="${escapeAttr(f.path)}">目录</button>
       </div>`;
     }
@@ -1853,6 +2087,7 @@
       matchModeEl.disabled = !enabled;
       downloadBtn.disabled = !enabled;
       if (revealBtn) revealBtn.disabled = !enabled;
+      if (copyPathBtn) copyPathBtn.disabled = !enabled;
       levelSeg.querySelectorAll("button").forEach((b) => { b.disabled = !enabled; });
       if (!enabled) {
         searchClearBtn.disabled = true;
@@ -2085,22 +2320,37 @@
     function renderSearchStatus(data, append) {
       const total = Number(data.total_hits);
       const hasTotal = Number.isFinite(total);
+      if (!append && Number.isFinite(Number(data.offset))) {
+        searchStartOffset = Number(data.offset);
+        searchHasBefore = searchStartOffset > 0;
+      }
+      if (data.total_hits !== undefined && data.total_hits !== null && hasTotal) searchTotal = total;
       if (!append) {
         previewMsg.textContent = data.message || "";
       } else if (hasTotal) {
         previewMsg.textContent =
           "已加载 " + searchOffset + " / " + total + " 处匹配（全文扫描） · 点击行可跳转上下文";
-      } else {
+      } else if (!data.message) {
         previewMsg.textContent = "已加载 " + searchOffset + " 处匹配（全文扫描） · 点击行可跳转上下文";
       }
       searchHasMore = !!data.has_more;
-      if (!searchHasMore) {
-        if (data.message) previewMsg.textContent = data.message;
-        return;
+      if (!searchHasMore && data.message) previewMsg.textContent = data.message;
+      if (!searchHasMore && !searchHasBefore) return;
+
+      if (searchHasBefore) {
+        const earlier = document.createElement("button");
+        earlier.type = "button";
+        earlier.className = "btn btn-sm search-earlier";
+        earlier.style.marginLeft = "8px";
+        earlier.textContent = searchMoreBusy ? "加载中…" : "加载更早匹配";
+        earlier.disabled = searchMoreBusy;
+        earlier.addEventListener("click", loadEarlierSearchResults);
+        previewMsg.appendChild(earlier);
       }
+      if (!searchHasMore) return;
       const more = document.createElement("button");
       more.type = "button";
-      more.className = "btn btn-sm";
+      more.className = "btn btn-sm search-more";
       more.style.marginLeft = "8px";
       more.textContent = searchMoreBusy
         ? "加载中…"
@@ -2145,7 +2395,7 @@
       } finally {
         searchMoreBusy = false;
         if (reqId !== previewReqId) return;
-        const more = previewMsg.querySelector("button");
+        const more = previewMsg.querySelector("button.search-more");
         if (more && searchHasMore) {
           more.disabled = false;
           const total = Number(data && data.total_hits);
@@ -2156,7 +2406,67 @@
       }
     }
 
-    async function openPreview(jobId, path, name, mode) {
+    async function loadEarlierSearchResults() {
+      if (!selected || selected.kind !== "decoded" || previewMode !== "search" || !searchHasBefore || searchMoreBusy) return;
+      const jobId = selected.jobId;
+      const path = selected.path;
+      const reqId = previewReqId;
+      const q = (lastQuery || searchInput.value).trim();
+      const limit = Math.min(2000, searchStartOffset);
+      const offset = searchStartOffset - limit;
+      if (limit <= 0) return;
+      searchMoreBusy = true;
+      const earlierBtn = previewMsg.querySelector("button.search-earlier");
+      if (earlierBtn) {
+        earlierBtn.disabled = true;
+        earlierBtn.textContent = "加载中…";
+      }
+      try {
+        let url = "/api/file/" + jobId + "?path=" + encodeURIComponent(path) +
+          "&mode=search&q=" + encodeURIComponent(q) +
+          "&match=" + encodeURIComponent(lastMatchMode) +
+          "&offset=" + encodeURIComponent(offset) +
+          "&limit=" + encodeURIComponent(limit);
+        if (selectedLevel) url += "&level=" + encodeURIComponent(selectedLevel);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (reqId !== previewReqId) return;
+        if (!data.ok) {
+          showToast(data.error || "搜索失败", "error");
+          return;
+        }
+        const firstEl = previewContent.querySelector(".row[data-line]");
+        const firstN = firstEl ? Number(firstEl.dataset.line) : Infinity;
+        const lines = (data.lines || []).filter((l) => Number(l.n) < firstN);
+        searchStartOffset = offset;
+        searchHasBefore = searchStartOffset > 0;
+        if (lines.length) renderLines(lines, data.query || q, "prepend", true);
+        if (Number.isFinite(Number(data.total_hits))) searchTotal = Number(data.total_hits);
+        const label = q || (selectedLevel ? "级别 " + selectedLevel : "");
+        const totalText = Number.isFinite(Number(searchTotal)) ? " / 共 " + searchTotal + " 处" : "";
+        previewMsg.textContent =
+          "「" + label + "」已显示第 " + (searchStartOffset + 1) + "–" + searchOffset + " 处" +
+          totalText + " · 点击行可跳转上下文";
+        renderSearchStatus({
+          has_more: searchHasMore,
+          total_hits: searchTotal,
+          message: previewMsg.textContent,
+        }, false);
+      } catch (e) {
+        if (reqId === previewReqId) showToast("搜索失败：" + e.message, "error");
+      } finally {
+        searchMoreBusy = false;
+        if (reqId !== previewReqId) return;
+        const earlier = previewMsg.querySelector("button.search-earlier");
+        if (earlier && searchHasBefore) {
+          earlier.disabled = false;
+          earlier.textContent = "加载更早匹配";
+        }
+      }
+    }
+
+    async function openPreview(jobId, path, name, mode, opts) {
+      const fromEnd = !!(opts && opts.fromEnd);
       selected = { jobId, path, name, kind: "decoded" };
       setPreviewControls(true);
       const useMode = mode || previewMode || "head";
@@ -2180,14 +2490,21 @@
           focusLineNo = null;
           const match = getMatchMode();
           lastMatchMode = match;
-          // A new search always starts at the first hit. Pagination uses loadMoreSearchResults.
+          // A new search starts at the first hit, unless 「末尾」asks for the last page.
           if (!searchMoreBusy) searchOffset = 0;
+          if (!fromEnd) {
+            searchStartOffset = 0;
+            searchHasBefore = false;
+          }
           previewContent.innerHTML = "";
-          previewMsg.textContent = "正在全文搜索「" + q + "」…";
+          previewMsg.textContent = fromEnd
+            ? (q ? "正在搜索「" + q + "」并定位到末尾…" : "正在按级别筛选并定位到末尾…")
+            : (q ? "正在全文搜索「" + q + "」…" : "正在按级别筛选…");
           let url = "/api/file/" + jobId + "?path=" + encodeURIComponent(path) +
             "&mode=search&q=" + encodeURIComponent(q) +
             "&match=" + encodeURIComponent(match) +
             "&offset=" + encodeURIComponent(searchOffset);
+          if (fromEnd) url += "&from_end=1";
           if (selectedLevel) url += "&level=" + encodeURIComponent(selectedLevel);
           const res = await fetch(url);
           const data = await res.json();
@@ -2210,10 +2527,20 @@
           previewMeta.textContent = formatSize(data.size);
           renderSearchStatus(data, false);
           syncStickyOffsets();
-          while (searchHasMore && reqId === previewReqId) {
-            const before = searchOffset;
-            await loadMoreSearchResults();
-            if (reqId !== previewReqId || searchOffset === before) break;
+          const gotEnd = fromEnd && data.from_end === true;
+          if (!gotEnd) {
+            while (searchHasMore && reqId === previewReqId) {
+              const before = searchOffset;
+              await loadMoreSearchResults();
+              if (reqId !== previewReqId || searchOffset === before) break;
+            }
+          }
+          if (fromEnd && reqId === previewReqId) {
+            modeHead.classList.remove("active");
+            modeTail.classList.add("active");
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => scrollMainToBottom());
+            });
           }
           return;
         }
@@ -2324,7 +2651,10 @@
       hideSuggest();
       setSearchModeUi(false);
       searchOffset = 0;
+      searchStartOffset = 0;
       searchHasMore = false;
+      searchHasBefore = false;
+      searchTotal = null;
       searchMoreBusy = false;
       previewPath.textContent = "选择左侧解密文件，或把已解密日志拖到下方预览";
       previewMeta.textContent = "";
@@ -2350,26 +2680,42 @@
     async function doDecode() {
       const files = selectedFiles.slice();
       if (!files.length) return;
-      const totalBytes = files.reduce((s, f) => s + (f.file.size || 0), 0);
-      if (totalBytes > 200 * 1024 * 1024) {
+      const local = files.every((f) => f.localPath);
+      const totalBytes = files.reduce((s, f) => s + fileSizeOf(f), 0);
+      if (!local && totalBytes > 200 * 1024 * 1024) {
         showToast("选中文件合计超过 200MB，请分批上传", "error");
         return;
       }
       decodeBtn.disabled = true;
       clearFilesBtn.disabled = true;
+      if (pullDeviceBtn) pullDeviceBtn.disabled = true;
+      setSyncBusy(true);
       decodeBtn.classList.remove("ready");
       decodeBtn.textContent = "解密中…";
       scrollMainTo(0);
-      setProgress(2, "正在上传文件…");
+      setProgress(2, local ? "正在解密，明文写到源文件目录…" : "正在上传文件…");
 
-      const fd = new FormData();
-      files.forEach((item) => fd.append("files", item.file, item.rel));
-      fd.append("script", scriptSelect.value || "decode_mars_nocrypt_log_file.py");
+      const scriptName = scriptSelect.value || "decode_mars_nocrypt_log_file.py";
       try {
-        localStorage.setItem(SCRIPT_STORE_KEY, scriptSelect.value || "decode_mars_nocrypt_log_file.py");
+        localStorage.setItem(SCRIPT_STORE_KEY, scriptName);
       } catch (e) {}
       try {
-        const res = await fetch("/api/decode", { method: "POST", body: fd });
+        let res;
+        if (local) {
+          res = await fetch("/api/decode-local", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              script: scriptName,
+              paths: files.map((f) => f.localPath),
+            }),
+          });
+        } else {
+          const fd = new FormData();
+          files.forEach((item) => fd.append("files", item.file, item.rel));
+          fd.append("script", scriptName);
+          res = await fetch("/api/decode", { method: "POST", body: fd });
+        }
         const contentType = (res.headers.get("content-type") || "").toLowerCase();
         if (!res.ok && !contentType.includes("ndjson") && !contentType.includes("json") && !contentType.includes("octet-stream") && !contentType.includes("text/plain")) {
           showToast("解密请求失败（HTTP " + res.status + "）", "error");
@@ -2382,7 +2728,7 @@
             return;
           }
           jobsCache[data.job.id] = data.job;
-          showToast("解密完成：共 " + data.job.decoded.length + " 个文件", "ok");
+          showToast(decodeDoneText(data.job), "ok");
           clearSelectedFiles();
           await loadHistory(data.job.id);
           return;
@@ -2443,7 +2789,7 @@
 
         setProgress(100, "解密完成");
         jobsCache[finalData.job.id] = finalData.job;
-        showToast("解密完成：共 " + finalData.job.decoded.length + " 个文件", "ok");
+        showToast(decodeDoneText(finalData.job), "ok");
         clearSelectedFiles();
         await loadHistory(finalData.job.id);
       } catch (e) {
@@ -2451,8 +2797,151 @@
       } finally {
         hideProgress();
         decodeBtn.textContent = "开始解密";
+        if (pullDeviceBtn) pullDeviceBtn.disabled = false;
+        setSyncBusy(false);
         renderSelectedFiles();
       }
+    }
+
+    function hideDevicePicker() {
+      const panel = document.getElementById("devicePicker");
+      if (panel) panel.classList.remove("show");
+    }
+
+    function showDevicePicker(devices) {
+      const panel = document.getElementById("devicePicker");
+      const list = document.getElementById("devicePickerList");
+      if (!panel || !list) return;
+      list.innerHTML = "";
+      devices.forEach((device) => {
+        const li = document.createElement("li");
+        const label = (device.model ? device.model + " · " : "") + device.serial;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-ghost btn-sm device-pick";
+        btn.textContent = label;
+        btn.title = device.serial;
+        btn.addEventListener("click", () => {
+          hideDevicePicker();
+          doPullDevice(device.serial);
+        });
+        li.appendChild(btn);
+        list.appendChild(li);
+      });
+      panel.classList.add("show");
+    }
+
+    async function doPullDevice(serial) {
+      if (!pullDeviceBtn || pullDeviceBtn.disabled) return;
+      hideDevicePicker();
+      pullDeviceBtn.disabled = true;
+      setSyncBusy(true);
+      decodeBtn.disabled = true;
+      clearFilesBtn.disabled = true;
+      pullDeviceBtn.textContent = "拉取中…";
+      scrollMainTo(0);
+      setProgress(2, "正在检查 adb…");
+      const scriptName = scriptSelect.value || "decode_mars_nocrypt_log_file.py";
+      try {
+        localStorage.setItem(SCRIPT_STORE_KEY, scriptName);
+      } catch (e) {}
+      try {
+        const payload = { script: scriptName };
+        if (serial) payload.serial = serial;
+        const res = await fetch("/api/device-elog", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const contentType = (res.headers.get("content-type") || "").toLowerCase();
+        if (contentType.includes("application/json")) {
+          const data = await res.json();
+          if (data && data.need_device && Array.isArray(data.devices) && data.devices.length) {
+            showDevicePicker(data.devices);
+            return;
+          }
+          if (!data || !data.ok) {
+            showToast((data && data.error) || ("拉取失败（HTTP " + res.status + "）"), "error");
+            return;
+          }
+        }
+        if (!res.ok && !contentType.includes("ndjson")) {
+          showToast("拉取请求失败（HTTP " + res.status + "）", "error");
+          return;
+        }
+        if (!res.body) {
+          showToast("拉取响应异常", "error");
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let finalData = null;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n");
+          buffer = parts.pop() || "";
+          for (const line of parts) {
+            const text = line.trim();
+            if (!text) continue;
+            let msg;
+            try {
+              msg = JSON.parse(text);
+            } catch (err) {
+              continue;
+            }
+            if (msg.type === "progress") {
+              setProgress(msg.percent, msg.message || "处理中…");
+              pullDeviceBtn.textContent = "拉取中 " + Math.round(msg.percent || 0) + "%";
+            } else if (msg.type === "done") {
+              finalData = msg;
+            }
+          }
+        }
+        if (buffer.trim()) {
+          try {
+            const msg = JSON.parse(buffer.trim());
+            if (msg.type === "done") finalData = msg;
+            else if (msg.type === "progress") setProgress(msg.percent, msg.message);
+          } catch (err) {}
+        }
+        if (!finalData) {
+          showToast("拉取响应异常", "error");
+          return;
+        }
+        if (!finalData.ok) {
+          showToast(finalData.error || "拉取失败", "error");
+          return;
+        }
+        setProgress(100, "解密完成，已覆盖该设备自己的明文");
+        const job = finalData.job;
+        jobsCache[job.id] = job;
+        const decoded = (job.decoded || [])[0];
+        if (decoded) await openPreview(job.id, decoded.path, decoded.name, "head");
+        showToast("已保存到该设备目录：" + (job.title || remoteNameOf(job)), "ok");
+        await loadHistory(job.id);
+      } catch (e) {
+        showToast("请求失败：" + e.message, "error");
+      } finally {
+        hideProgress();
+        pullDeviceBtn.disabled = false;
+        pullDeviceBtn.textContent = "拉取设备最新日志";
+        setSyncBusy(false);
+        renderSelectedFiles();
+      }
+    }
+
+    function remoteNameOf(job) {
+      const decoded = job && job.decoded && job.decoded[0];
+      return (decoded && decoded.name) || "设备日志";
+    }
+
+    function decodeDoneText(job) {
+      const n = (job && job.decoded || []).length;
+      if (job && job.external) return "解密完成：共 " + n + " 个文件，已写在源文件同一目录";
+      return "解密完成：共 " + n + " 个文件";
     }
 
     function clearSelectedFiles() {
@@ -2513,12 +3002,17 @@
         showToast("文件夹中未找到 .xlog / .zip", "error");
       }
     });
+    dropzone.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      pickLocal("files");
+    });
     pickFolderBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      folderInput.click();
+      pickLocal("folder");
     });
     decodeBtn.addEventListener("click", doDecode);
+    if (pullDeviceBtn) pullDeviceBtn.addEventListener("click", () => doPullDevice());
     clearFilesBtn.addEventListener("click", () => {
       clearSelectedFiles();
     });
@@ -2535,6 +3029,35 @@
       const url = "/api/file/" + selected.jobId + "?path=" + encodeURIComponent(selected.path) + "&download=1";
       window.location.href = url;
     });
+
+    async function copyFullPath(jobId, path) {
+      if (!jobId || !path) return;
+      try {
+        const res = await fetch("/api/file-path/" + jobId + "?path=" + encodeURIComponent(path));
+        const data = await res.json();
+        if (!data.ok || !data.path) {
+          showToast(data.error || "无法取得完整路径", "error");
+          return;
+        }
+        const full = data.path;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(full);
+        } else {
+          const box = document.createElement("textarea");
+          box.value = full;
+          box.setAttribute("readonly", "");
+          box.style.position = "fixed";
+          box.style.left = "-9999px";
+          document.body.appendChild(box);
+          box.select();
+          document.execCommand("copy");
+          box.remove();
+        }
+        showToast("已复制完整路径", "ok");
+      } catch (e) {
+        showToast("复制失败：" + e.message, "error");
+      }
+    }
 
     async function revealInFolder(jobId, path) {
       if (!jobId || !path) return;
@@ -2555,6 +3078,13 @@
       }
     }
 
+    if (copyPathBtn) {
+      copyPathBtn.addEventListener("click", () => {
+        if (!selected || selected.kind !== "decoded") return;
+        copyFullPath(selected.jobId, selected.path);
+      });
+    }
+
     if (revealBtn) {
       revealBtn.addEventListener("click", () => {
         if (!selected) return;
@@ -2573,11 +3103,38 @@
     });
     modeTail.addEventListener("click", () => {
       if (!selected || selected.kind !== "decoded") return;
+      hideSuggest();
+      const q = searchInput.value.trim();
+      // 有关键字或级别时保留筛选，搜索后定位到最后一处匹配。
+      if (q || selectedLevel) {
+        const same =
+          previewMode === "search" &&
+          lastQuery === q &&
+          lastMatchMode === getMatchMode() &&
+          !searchHasMore &&
+          !searchMoreBusy &&
+          previewContent.querySelector(".row[data-line]");
+        if (same) {
+          modeHead.classList.remove("active");
+          modeTail.classList.add("active");
+          requestAnimationFrame(() => scrollMainToBottom());
+          return;
+        }
+        lastQuery = q;
+        searchOffset = 0;
+        searchStartOffset = 0;
+        searchHasMore = false;
+        searchHasBefore = false;
+        searchMoreBusy = false;
+        if (q) pushSearchHistory(q);
+        updateClearBtn();
+        openPreview(selected.jobId, selected.path, selected.name, "search", { fromEnd: true });
+        return;
+      }
       lastQuery = "";
       searchInput.value = "";
       setSelectedLevel("");
       updateClearBtn();
-      hideSuggest();
       openPreview(selected.jobId, selected.path, selected.name, "tail");
     });
 
@@ -2593,7 +3150,9 @@
       }
       lastQuery = q;
       searchOffset = 0;
+      searchStartOffset = 0;
       searchHasMore = false;
+      searchHasBefore = false;
       searchMoreBusy = false;
       if (q) pushSearchHistory(q);
       updateClearBtn();
@@ -2782,7 +3341,12 @@
       mainPane.addEventListener("scroll", () => {
         updateScrollTopBtn();
         syncStickyOffsets();
-        if (!browseState || previewMode === "search" || scrollLoading) return;
+        if (scrollLoading || searchMoreBusy) return;
+        if (previewMode === "search") {
+          if (searchHasBefore && nearContentTop()) loadEarlierSearchResults();
+          return;
+        }
+        if (!browseState) return;
         if (nearLogTop()) loadMore("up");
       }, { passive: true });
     }
@@ -2822,6 +3386,23 @@
     });
     dropzone.addEventListener("drop", async (e) => {
       if (!e.dataTransfer) return;
+      const droppedPaths = urisToLocalPaths(
+        e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain") || ""
+      );
+      if (droppedPaths.length) {
+        try {
+          const res = await fetch("/api/pick", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths: droppedPaths }),
+          });
+          const data = await res.json();
+          if (data.ok && data.items && data.items.length) {
+            applyLocalItems(data.items);
+            return;
+          }
+        } catch (err) { /* fall through to browser file copy */ }
+      }
       try {
         const collected = await collectDroppedFiles(e.dataTransfer);
         setSelectedFromList(collected);
