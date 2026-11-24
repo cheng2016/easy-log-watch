@@ -462,22 +462,36 @@
     }
 
     .upload-actions {
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
       gap: 6px;
-      justify-content: center;
+      width: 240px;
       flex-shrink: 0;
-      min-width: 132px;
+      align-content: center;
     }
 
     .upload-extra {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
+      display: contents;
+    }
+
+    .upload-actions .btn-sm {
+      height: 32px;
+      padding: 0 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+    }
+
+    #pickFolderBtn,
+    #clearFilesBtn,
+    #pullDeviceBtn {
+      width: 100%;
+      min-width: 0;
     }
 
     #pullDeviceBtn {
-      flex: 1 1 100%;
+      grid-column: 1 / -1;
     }
 
     .decoder-row {
@@ -541,8 +555,10 @@
     }
 
     #decodeBtn {
+      grid-column: 1 / -1;
+      width: 100%;
       min-height: 40px;
-      min-width: 132px;
+      min-width: 0;
       padding: 8px 16px;
       font-size: 0.92rem;
       font-weight: 800;
@@ -833,8 +849,41 @@
     .preview-bar-top {
       display: flex;
       align-items: center;
-      gap: 12px;
-      min-height: 28px;
+      gap: 8px;
+      min-height: 32px;
+    }
+
+    .preview-actions {
+      display: inline-flex;
+      flex-shrink: 0;
+      align-items: stretch;
+      margin-left: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--bg-elevated);
+    }
+
+    .preview-actions .btn {
+      border: none;
+      border-radius: 0;
+      border-right: 1px solid var(--border);
+      background: transparent;
+      height: 28px;
+      padding: 0 10px;
+      white-space: nowrap;
+    }
+
+    .preview-actions .btn:last-child { border-right: none; }
+
+    .preview-actions .btn:hover:not(:disabled) {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .preview-actions .btn:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
     }
 
     .preview-bar .path {
@@ -1152,8 +1201,7 @@
       .preview-section { min-height: 40vh; }
       .preview-wrap { min-height: 36vh; }
       .upload-row { flex-direction: column; }
-      .upload-actions { min-width: 0; width: 100%; }
-      #decodeBtn { width: 100%; min-width: 0; }
+      .upload-actions { width: 100%; }
       .scroll-top-btn { right: 14px; bottom: 14px; }
     }
   </style>
@@ -1199,7 +1247,7 @@
           <div class="upload-extra">
             <button class="btn btn-ghost btn-sm" type="button" id="pickFolderBtn">选文件夹</button>
             <button class="btn btn-ghost btn-sm" type="button" id="clearFilesBtn" disabled>清除</button>
-            <button class="btn btn-ghost btn-sm" type="button" id="pullDeviceBtn" title="从设备 /data/data/com.tcl.eshow/files/elog/ 取最新日志。每台设备单独存放，再次拉取只覆盖该设备">拉取设备最新日志</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="pullDeviceBtn" title="从设备日志目录取最新一份。每台单独存放，再次拉取只覆盖该设备">拉取设备日志</button>
           </div>
         </div>
       </div>
@@ -1245,9 +1293,11 @@
       <div class="preview-bar-top">
         <div class="path" id="previewPath">选择左侧解密文件，或把已解密日志拖到下方预览</div>
         <div class="meta" id="previewMeta"></div>
-        <button class="btn btn-sm" type="button" id="copyPathBtn" disabled title="复制这份解密日志的完整路径">复制路径</button>
-        <button class="btn btn-sm" type="button" id="revealBtn" disabled title="在资源管理器 / Finder 中打开所在文件夹">打开文件夹</button>
-        <button class="btn btn-sm" type="button" id="downloadBtn" disabled>下载完整文件</button>
+        <div class="preview-actions">
+          <button class="btn btn-sm" type="button" id="copyPathBtn" disabled title="复制这份解密日志的完整路径">复制路径</button>
+          <button class="btn btn-sm" type="button" id="revealBtn" disabled title="在资源管理器 / Finder 中打开所在文件夹">打开文件夹</button>
+          <button class="btn btn-sm" type="button" id="downloadBtn" disabled title="下载完整文件">下载</button>
+        </div>
       </div>
       <div class="preview-tools">
         <div class="seg">
@@ -2927,7 +2977,7 @@
       } finally {
         hideProgress();
         pullDeviceBtn.disabled = false;
-        pullDeviceBtn.textContent = "拉取设备最新日志";
+        pullDeviceBtn.textContent = "拉取设备日志";
         setSyncBusy(false);
         renderSelectedFiles();
       }
