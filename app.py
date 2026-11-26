@@ -757,7 +757,8 @@ def api_history():
                 "decoded_count": len(item.get("decoded") or []),
                 "failed_count": len(item.get("failed") or []),
                 "external": bool(item.get("external")),
-                "device": bool(item.get("device_dir")),
+                "kind": item.get("kind") or "",
+                "device": bool(item.get("device_dir")) or item.get("kind") == "device-crash",
                 "device_key": item.get("device_key") or "",
                 "device_serial": item.get("device_serial") or "",
             }
@@ -1447,6 +1448,210 @@ def api_device_elog():
             yield emit({"type": "done", "ok": False, "error": "adb 超时"})
         except Exception as e:
             yield emit({"type": "done", "ok": False, "error": "处理失败：" + str(e)})
+
+    return _ndjson_response(generate)
+
+
+_CRASH_DROPBOX_TAGS = {
+    "data_app_crash", "system_app_crash", "system_server_crash",
+    "data_app_native_crash", "system_app_native_crash", "system_server_native_crash",
+    "SYSTEM_TOMBSTONE",
+}
+_DROPBOX_ENTRY_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(\S+)\s+\(([^\n]*)\)\s*$",
+    re.MULTILINE,
+)
+_DROPBOX_PRINT_ENTRY_RE = re.compile(r"^={20,}[ \t]*\n" + _DROPBOX_ENTRY_RE.pattern, re.MULTILINE)
+
+
+def _crash_source_text(adb: str, serial: str, command: str) -> str:
+    try:
+        proc = _adb_text(adb, ["-s", serial, "shell", command], timeout=60)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("读取超时") from e
+    output = (proc.stdout or "").replace("\r", "")
+    if proc.returncode != 0 or re.search(
+        r"^\s*(?:Permission Denial:|/system/bin/sh:|sh:|Can't find service:|Can't dump service:|Error dumping service|DUMP TIMEOUT|\*\*\* SERVICE DUMP FAILED)",
+        output, re.MULTILINE,
+    ):
+        detail = ((proc.stderr or "") or output).strip()
+        raise RuntimeError(detail.splitlines()[0][:200] if detail else "读取失败")
+    return output
+
+
+def _filter_crash_logcat(output: str, start: datetime, end: datetime) -> list[str]:
+    lines: list[str] = []
+    keep = False
+    seen_timestamp = False
+    for line in output.splitlines():
+        if line.startswith("---------"):
+            keep = False
+            continue
+        match = re.match(r"^\s*(\d+\.\d+)\s+(.+)$", line)
+        if match:
+            seen_timestamp = True
+            timestamp = float(match[1])
+            keep = start.timestamp() <= timestamp < end.timestamp() + 1
+            if keep:
+                stamp = datetime.fromtimestamp(timestamp, end.tzinfo).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                lines.append(stamp + " " + match[2])
+        elif keep:
+            lines.append(line)
+        elif line.strip() and not seen_timestamp:
+            raise RuntimeError("无法识别 logcat 时间格式：" + line[:160])
+    return lines
+
+
+def _dropbox_crash_entries(output: str, start: datetime, end: datetime, *, printed_tag: str = "") -> list[tuple[str, str]]:
+    pattern = _DROPBOX_PRINT_ENTRY_RE if printed_tag else _DROPBOX_ENTRY_RE
+    headers = [header for header in pattern.finditer(output) if not printed_tag or header[2] == printed_tag]
+    entries: list[tuple[str, str]] = []
+    for index, header in enumerate(headers):
+        tag = header[2]
+        stamp = datetime.strptime(header[1], "%Y-%m-%d %H:%M:%S").replace(tzinfo=end.tzinfo)
+        if tag not in _CRASH_DROPBOX_TAGS or not start <= stamp <= end:
+            continue
+        stop = headers[index + 1].start() if index + 1 < len(headers) else len(output)
+        body = output[header.end():stop].strip()
+        body = re.sub(r"\n*=+\s*$", "", body).strip()
+        text = f"{header[1]} {tag} ({header[3]})"
+        if body:
+            text += "\n" + body
+        entries.append((tag, text))
+    return entries
+
+
+@app.route("/api/device-crash", methods=["POST"])
+def api_device_crash():
+    blocked = _reject_cross_site()
+    if blocked:
+        return jsonify({"ok": False, "error": blocked}), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "请求必须是 JSON 对象"}), 400
+    requested = str(data.get("serial") or "").strip()
+    if any(ord(ch) < 32 for ch in requested) or len(requested) > 200:
+        return jsonify({"ok": False, "error": "无效的设备序列号"}), 400
+    try:
+        adb = _require_adb()
+        online, offline_note = _online_devices(adb)
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    if requested:
+        chosen = next((row for row in online if row["serial"] == requested), None)
+        if not chosen:
+            return jsonify({"ok": False, "error": "这台设备当前不在线：" + requested}), 400
+    elif len(online) > 1:
+        return jsonify({"ok": False, "need_device": True, "devices": online})
+    elif online:
+        chosen = online[0]
+    else:
+        message = "没有处于 device 状态的设备。请确认已打开 USB 调试并授权。"
+        if offline_note:
+            message += "当前：" + offline_note + "。"
+        return jsonify({"ok": False, "error": message}), 400
+    serial = chosen["serial"]
+
+    def generate():
+        def emit(payload: dict) -> str:
+            return json.dumps(payload, ensure_ascii=False) + "\n"
+
+        try:
+            yield emit({"type": "progress", "percent": 8, "message": f"正在读取 {serial} 的设备时间…"})
+            raw_time = _crash_source_text(adb, serial, "date '+%s|%Y-%m-%d %H:%M:%S|%z'").strip()
+            epoch, local_time, offset = raw_time.split("|")
+            zone = datetime.strptime(local_time + "|" + offset, "%Y-%m-%d %H:%M:%S|%z").tzinfo
+            end = datetime.fromtimestamp(int(epoch), zone)
+            start = datetime.fromtimestamp(int(epoch) - 24 * 60 * 60, zone)
+            identity = _device_identity(adb, serial, chosen.get("model") or "")
+            warnings: list[str] = []
+            logcat_lines: list[str] = []
+            logcat_ok = False
+            dropbox_ok = False
+            entries: list[tuple[str, str]] = []
+            yield emit({"type": "progress", "percent": 25, "message": "正在读取 crash 缓冲区…"})
+            try:
+                output = _crash_source_text(adb, serial, "logcat -b crash -d -v epoch")
+                logcat_lines = _filter_crash_logcat(output, start, end)
+                logcat_ok = True
+            except RuntimeError as e:
+                warnings.append("logcat crash：" + str(e))
+            yield emit({"type": "progress", "percent": 45, "message": "正在查找系统 DropBox 崩溃记录…"})
+            try:
+                listing = _crash_source_text(adb, serial, "dumpsys -t 50 dropbox")
+                if "Drop box contents:" not in listing:
+                    raise RuntimeError("系统未返回可识别的 DropBox 列表")
+                recent = _dropbox_crash_entries(listing, start, end)
+                tags = sorted({tag for tag, _ in recent})
+                dropbox_ok = not tags
+                # DropBox 的日期参数是匹配条件，不是起始时间，因此在本地筛选完整条目。
+                for index, tag in enumerate(tags):
+                    yield emit({"type": "progress", "percent": 50 + 35 * index / len(tags), "message": f"正在读取 {tag}…"})
+                    try:
+                        output = _crash_source_text(adb, serial, "dumpsys -t 50 dropbox --print " + _sh_single_quote(tag))
+                        if "Drop box contents:" not in output:
+                            raise RuntimeError("系统未返回可识别的 DropBox 内容")
+                        records = _dropbox_crash_entries(output, start, end, printed_tag=tag)
+                        dropbox_ok = True
+                        readable = []
+                        for entry_tag, text in records:
+                            if "(contents lost)" in text.splitlines()[0] or re.search(r"^\*\*\* (?:java\.|android\.)", text, re.MULTILINE):
+                                warnings.append(f"DropBox {tag}（{text[:19]}）：条目内容已被清理或无法读取")
+                            else:
+                                readable.append((entry_tag, text))
+                        if len(records) < sum(1 for entry_tag, _ in recent if entry_tag == tag):
+                            warnings.append(f"DropBox {tag}：部分条目在读取前已被清理或无法读取")
+                        entries.extend(readable)
+                    except RuntimeError as e:
+                        warnings.append("DropBox " + tag + "：" + str(e))
+            except RuntimeError as e:
+                warnings.append("DropBox：" + str(e))
+            if not logcat_ok and not dropbox_ok:
+                raise RuntimeError("崩溃日志来源均无法读取；" + "；".join(warnings))
+            entries.sort(key=lambda entry: entry[1][:19])
+            if not logcat_lines and not entries:
+                message = "近 24 小时未找到可读取且仍保留的崩溃记录"
+            else:
+                message = f"拉取完成：logcat {len(logcat_lines)} 行，DropBox {len(entries)} 条"
+            if warnings:
+                message += "（部分来源不完整，详见报告）"
+            report = [
+                "Android 近 24 小时崩溃日志（全设备，Java / Native）",
+                f"设备：{identity['model'] or identity['key']} · {serial}",
+                f"时间范围（设备时区 {offset}，按秒筛选）：{start:%Y-%m-%d %H:%M:%S} 至 {end:%Y-%m-%d %H:%M:%S}",
+                message,
+                "说明：仅收集设备仍保留且允许读取的记录；缓冲区覆盖、重启、系统清理或权限限制可能造成缺失。",
+                "无记录不代表近 24 小时没有发生崩溃；不同来源可能包含同一次崩溃，不作去重计数。",
+            ]
+            if warnings:
+                report += ["", "[读取警告]", *warnings]
+            report += ["", "[logcat crash]", *(logcat_lines or ["未找到时间范围内的记录" if logcat_ok else "该来源读取失败，见读取警告"])]
+            report += ["", "[系统 DropBox 崩溃记录]"]
+            if entries:
+                for tag, text in entries:
+                    report += ["", text]
+            else:
+                report.append("未找到时间范围内的记录" if dropbox_ok else "该来源读取失败，见读取警告")
+            yield emit({"type": "progress", "percent": 92, "message": "正在保存独立崩溃报告…"})
+            job_id = uuid.uuid4().hex
+            work_dir = _job_dir(job_id)
+            work_dir.mkdir(parents=True, exist_ok=True)
+            path = work_dir / "crash-24h.log"
+            path.write_text("\n".join(report) + "\n", encoding="utf-8")
+            job = {
+                "id": job_id, "kind": "device-crash", "created_at": _now_iso(),
+                "title": f"{identity['model'] or identity['key']} · 近24小时崩溃 · {serial}"[:120],
+                "note": message[:200], "script": "", "script_name": "崩溃日志（无需解密）",
+                "uploads": [], "sources": [], "decoded": [_file_meta(path, work_dir, force_decoded=True)],
+                "failed": [], "zip": None,
+                "device_key": identity["key"], "device_serial": serial, "device_model": identity["model"],
+                "window_start": start.isoformat(), "window_end": end.isoformat(),
+                "logcat_lines": len(logcat_lines), "dropbox_entries": len(entries), "warnings": warnings,
+            }
+            _upsert_job(job)
+            yield emit({"type": "done", "ok": True, "job": job, "message": message})
+        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as e:
+            yield emit({"type": "done", "ok": False, "error": "拉取崩溃日志失败：" + str(e)})
 
     return _ndjson_response(generate)
 

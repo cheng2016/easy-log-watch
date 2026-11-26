@@ -471,7 +471,9 @@
     }
 
     .upload-extra {
-      display: contents;
+      display: flex;
+      grid-column: 1 / -1;
+      gap: 6px;
     }
 
     .upload-actions .btn-sm {
@@ -484,14 +486,29 @@
     }
 
     #pickFolderBtn,
-    #clearFilesBtn,
-    #pullDeviceBtn {
-      width: 100%;
+    #clearFilesBtn {
+      flex: 1;
       min-width: 0;
     }
 
     #pullDeviceBtn {
       grid-column: 1 / -1;
+      width: 100%;
+      min-height: 40px;
+      font-size: 0.9rem;
+      font-weight: 700;
+    }
+
+    #pullCrashBtn {
+      flex: none;
+      border-color: transparent;
+      padding: 0 4px;
+      font-size: 0.7rem;
+    }
+
+    #pullCrashBtn:hover:not(:disabled) {
+      color: var(--accent);
+      background: var(--accent-soft);
     }
 
     .decoder-row {
@@ -1243,11 +1260,12 @@
           </div>
         </div>
         <div class="upload-actions">
+          <button class="btn btn-primary" type="button" id="pullDeviceBtn" title="从设备日志目录取最新一份。每台单独存放，再次拉取只覆盖该设备">拉取设备日志</button>
           <button class="btn btn-primary" type="button" id="decodeBtn" disabled>开始解密</button>
           <div class="upload-extra">
             <button class="btn btn-ghost btn-sm" type="button" id="pickFolderBtn">选文件夹</button>
             <button class="btn btn-ghost btn-sm" type="button" id="clearFilesBtn" disabled>清除</button>
-            <button class="btn btn-ghost btn-sm" type="button" id="pullDeviceBtn" title="从设备日志目录取最新一份。每台单独存放，再次拉取只覆盖该设备">拉取设备日志</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="pullCrashBtn" aria-label="拉取近24小时崩溃日志" title="按设备时间收集全设备近24小时的 Java / Native 崩溃。仅限仍保留且可读取的记录，无需解密">崩溃日志</button>
           </div>
         </div>
       </div>
@@ -1356,6 +1374,7 @@
     const decodeBtn = document.getElementById("decodeBtn");
     const clearFilesBtn = document.getElementById("clearFilesBtn");
     const pullDeviceBtn = document.getElementById("pullDeviceBtn");
+    const pullCrashBtn = document.getElementById("pullCrashBtn");
     const scriptSelect = document.getElementById("scriptSelect");
     const scriptHint = document.getElementById("scriptHint");
     const scriptDesc = document.getElementById("scriptDesc");
@@ -1367,6 +1386,7 @@
     const pendingCount = document.getElementById("pendingCount");
     /** @type {Array<{file: File, rel: string}>} */
     let selectedFiles = [];
+    let operationBusy = false;
     const progressPanel = document.getElementById("progressPanel");
     const progressMsg = document.getElementById("progressMsg");
     const progressPct = document.getElementById("progressPct");
@@ -1567,9 +1587,9 @@
 
     function renderSelectedFiles() {
       const files = selectedFiles;
-      decodeBtn.disabled = files.length === 0;
-      clearFilesBtn.disabled = files.length === 0;
-      decodeBtn.classList.toggle("ready", files.length > 0);
+      decodeBtn.disabled = operationBusy || files.length === 0;
+      clearFilesBtn.disabled = operationBusy || files.length === 0;
+      decodeBtn.classList.toggle("ready", !operationBusy && files.length > 0);
       pendingList.innerHTML = "";
 
       if (!files.length) {
@@ -1766,7 +1786,7 @@
     }
 
     function matchOnlineDevice(item) {
-      if (!item || !item.device) return null;
+      if (!item || !item.device || item.kind === "device-crash") return null;
       return onlineDevices.find((device) =>
         (item.device_key && device.key === item.device_key) ||
         (item.device_serial && device.serial === item.device_serial)
@@ -1780,6 +1800,7 @@
       const knownKeys = new Set();
       const knownSerials = new Set();
       for (const item of historyItems || []) {
+        if (item.kind === "device-crash") continue;
         if (item.device_key) knownKeys.add(item.device_key);
         if (item.device_serial) knownSerials.add(item.device_serial);
       }
@@ -1804,6 +1825,7 @@
         btn.className = "btn btn-ghost btn-sm sync-btn";
         btn.textContent = "同步";
         btn.title = "拉取最新日志并解密";
+        btn.disabled = operationBusy;
         btn.addEventListener("click", () => doPullDevice(device.serial));
         row.appendChild(name);
         row.appendChild(btn);
@@ -1866,7 +1888,7 @@
           const note = item.note || "";
           const live = matchOnlineDevice(item);
           const syncBtn = live
-            ? `<button class="btn btn-ghost btn-sm sync-btn" type="button" title="拉取这台在线设备的最新日志并解密" data-serial="${escapeAttr(live.serial)}">同步</button>`
+            ? `<button class="btn btn-ghost btn-sm sync-btn" type="button" title="拉取这台在线设备的最新 elog 日志并解密" data-serial="${escapeAttr(live.serial)}">同步</button>`
             : "";
           el.innerHTML = `
             <div class="job-head">
@@ -1879,7 +1901,7 @@
               <div class="job-meta">
                 <span>${escapeHtml((item.created_at || "").replace("T", " ").slice(0, 19))}</span>
                 <span>源 ${item.source_count || 0}</span>
-                <span>解密 ${item.decoded_count || 0}</span>
+                <span>${item.kind === "device-crash" ? "日志" : "解密"} ${item.decoded_count || 0}</span>
                 ${item.script_name ? `<span>${escapeHtml(item.script_name)}</span>` : ""}
               </div>
               <div class="job-note ${note ? "" : "empty"}">${note ? escapeHtml(note) : "无备注"}</div>
@@ -1904,6 +1926,7 @@
           });
           const sync = el.querySelector(".sync-btn");
           if (sync) {
+            sync.disabled = operationBusy;
             sync.addEventListener("click", (e) => {
               e.stopPropagation();
               doPullDevice(sync.dataset.serial);
@@ -2028,7 +2051,9 @@
         }
       }
       if (job.decoded && job.decoded.length) {
-        parts.push('<div class="file-group-title">解密文件 .xlog.log</div>');
+        parts.push(job.kind === "device-crash"
+          ? '<div class="file-group-title">近 24 小时崩溃报告 .log</div>'
+          : '<div class="file-group-title">解密文件 .xlog.log</div>');
         for (const f of job.decoded) {
           parts.push(fileItemHtml(jobId, f, "decoded"));
         }
@@ -2728,6 +2753,7 @@
     }
 
     async function doDecode() {
+      if (operationBusy) return;
       const files = selectedFiles.slice();
       if (!files.length) return;
       const local = files.every((f) => f.localPath);
@@ -2736,9 +2762,11 @@
         showToast("选中文件合计超过 200MB，请分批上传", "error");
         return;
       }
+      operationBusy = true;
       decodeBtn.disabled = true;
       clearFilesBtn.disabled = true;
       if (pullDeviceBtn) pullDeviceBtn.disabled = true;
+      if (pullCrashBtn) pullCrashBtn.disabled = true;
       setSyncBusy(true);
       decodeBtn.classList.remove("ready");
       decodeBtn.textContent = "解密中…";
@@ -2845,9 +2873,11 @@
       } catch (e) {
         showToast("请求失败：" + e.message, "error");
       } finally {
+        operationBusy = false;
         hideProgress();
         decodeBtn.textContent = "开始解密";
         if (pullDeviceBtn) pullDeviceBtn.disabled = false;
+        if (pullCrashBtn) pullCrashBtn.disabled = false;
         setSyncBusy(false);
         renderSelectedFiles();
       }
@@ -2858,7 +2888,7 @@
       if (panel) panel.classList.remove("show");
     }
 
-    function showDevicePicker(devices) {
+    function showDevicePicker(devices, onSelect = doPullDevice) {
       const panel = document.getElementById("devicePicker");
       const list = document.getElementById("devicePickerList");
       if (!panel || !list) return;
@@ -2873,7 +2903,7 @@
         btn.title = device.serial;
         btn.addEventListener("click", () => {
           hideDevicePicker();
-          doPullDevice(device.serial);
+          onSelect(device.serial);
         });
         li.appendChild(btn);
         list.appendChild(li);
@@ -2881,24 +2911,29 @@
       panel.classList.add("show");
     }
 
-    async function doPullDevice(serial) {
-      if (!pullDeviceBtn || pullDeviceBtn.disabled) return;
+    async function doPullDevice(serial, crash = false) {
+      const button = crash ? pullCrashBtn : pullDeviceBtn;
+      if (operationBusy || !button || button.disabled) return;
+      operationBusy = true;
       hideDevicePicker();
       pullDeviceBtn.disabled = true;
+      pullCrashBtn.disabled = true;
       setSyncBusy(true);
       decodeBtn.disabled = true;
       clearFilesBtn.disabled = true;
-      pullDeviceBtn.textContent = "拉取中…";
+      button.textContent = "拉取中…";
       scrollMainTo(0);
       setProgress(2, "正在检查 adb…");
       const scriptName = scriptSelect.value || "decode_mars_nocrypt_log_file.py";
+      if (!crash) {
+        try {
+          localStorage.setItem(SCRIPT_STORE_KEY, scriptName);
+        } catch (e) {}
+      }
       try {
-        localStorage.setItem(SCRIPT_STORE_KEY, scriptName);
-      } catch (e) {}
-      try {
-        const payload = { script: scriptName };
+        const payload = crash ? {} : { script: scriptName };
         if (serial) payload.serial = serial;
-        const res = await fetch("/api/device-elog", {
+        const res = await fetch(crash ? "/api/device-crash" : "/api/device-elog", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -2907,7 +2942,7 @@
         if (contentType.includes("application/json")) {
           const data = await res.json();
           if (data && data.need_device && Array.isArray(data.devices) && data.devices.length) {
-            showDevicePicker(data.devices);
+            showDevicePicker(data.devices, (chosenSerial) => doPullDevice(chosenSerial, crash));
             return;
           }
           if (!data || !data.ok) {
@@ -2944,7 +2979,7 @@
             }
             if (msg.type === "progress") {
               setProgress(msg.percent, msg.message || "处理中…");
-              pullDeviceBtn.textContent = "拉取中 " + Math.round(msg.percent || 0) + "%";
+              button.textContent = "拉取中 " + Math.round(msg.percent || 0) + "%";
             } else if (msg.type === "done") {
               finalData = msg;
             }
@@ -2965,19 +3000,22 @@
           showToast(finalData.error || "拉取失败", "error");
           return;
         }
-        setProgress(100, "解密完成，已覆盖该设备自己的明文");
+        setProgress(100, crash ? "崩溃日志拉取完成" : "解密完成，已覆盖该设备自己的明文");
         const job = finalData.job;
         jobsCache[job.id] = job;
         const decoded = (job.decoded || [])[0];
         if (decoded) await openPreview(job.id, decoded.path, decoded.name, "head");
-        showToast("已保存到该设备目录：" + (job.title || remoteNameOf(job)), "ok");
+        showToast(crash ? finalData.message : "已保存到该设备目录：" + (job.title || remoteNameOf(job)), "ok");
         await loadHistory(job.id);
       } catch (e) {
         showToast("请求失败：" + e.message, "error");
       } finally {
+        operationBusy = false;
         hideProgress();
         pullDeviceBtn.disabled = false;
+        pullCrashBtn.disabled = false;
         pullDeviceBtn.textContent = "拉取设备日志";
+        pullCrashBtn.textContent = "崩溃日志";
         setSyncBusy(false);
         renderSelectedFiles();
       }
@@ -3063,6 +3101,7 @@
     });
     decodeBtn.addEventListener("click", doDecode);
     if (pullDeviceBtn) pullDeviceBtn.addEventListener("click", () => doPullDevice());
+    if (pullCrashBtn) pullCrashBtn.addEventListener("click", () => doPullDevice(undefined, true));
     clearFilesBtn.addEventListener("click", () => {
       clearSelectedFiles();
     });
